@@ -271,7 +271,7 @@ class Cable(Ratings):
         try:
             Ratings.__init__(self, **cable_dict)
         except Exception:
-            raise PageNotFoundError(PAGE_ERROR) from None
+            raise PageNotFoundError(PAGE_ERROR)
 
     def __repr__(self):
         s = 'Cable Ratings for {day}, {date}'.format(
@@ -352,7 +352,7 @@ class Broadcast(Ratings):
         try:
             Ratings.__init__(self, **broadcast_dict)
         except Exception:
-            raise PageNotFoundError(PAGE_ERROR) from None
+            raise PageNotFoundError(PAGE_ERROR)
 
     def __repr__(self):
         if self.category == 'final':
