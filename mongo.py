@@ -10,6 +10,7 @@ from py_zap import Broadcast
 from py_zap import Cable
 import pymongo
 from datetime import datetime, timedelta, date
+import copy
 
 app = Flask(__name__)
 
@@ -49,12 +50,12 @@ def add_star():
 @app.route('/rating', methods=['POST'])
 def add_rating():
   zap = mongo.db.zaps
-  signal = request.json['signal']
-  title = request.json['title']
-  network = request.json['network']
+  category = request.json['category']
+  show = request.json['show']
+  net = request.json['net']
 
   # wrangle the DATE
-  airDate = request.json['airDate']
+  airDate = request.json['time']
   airDate = airDate.strip()
   datePieces = airDate.split(" ")
   dateDay = int(datePieces[1])
@@ -66,7 +67,6 @@ def add_rating():
   airTime = airTime.strip()
   airTime = airTime.replace("p.m.","PM")
   airTime = airTime.replace("a.m.","AM")
-  print(airTime)
   p = re.compile("([01]?[0-9])([:.])?([0-9]{2})?\s?([AP])M?$")
   hours = int(p.match(airTime).group(1))
   if ' PM' in airTime: hours = hours + 12
@@ -87,14 +87,58 @@ def add_rating():
   viewers = request.json['viewers']
   share = request.json['share']
   try:
-    rating_id = zap.insert({'signal': signal, 'title': title, 'network': network, 'airDate': airDate, 'rating': rating, 'viewers': viewers, 'share': share})
+    rating_id = zap.insert({'category': category, 'show': title, 'net': net, 'time': airDate, 'rating': rating, 'viewers': viewers, 'share': share})
     new_rating = zap.find_one({'_id': rating_id })
-    output = {'signal': new_rating['signal'], 'title': new_rating['title'], 'network': new_rating['network'], 'airDate': new_rating['airDate'], 'rating': new_rating['rating'], 'viewers': new_rating['viewers'], 'share': new_rating['share']}
+    output = {'category': new_rating['category'], 'title': new_rating['title'], 'net': new_rating['net'], 'time': new_rating['time'], 'rating': new_rating['rating'], 'viewers': new_rating['viewers'], 'share': new_rating['share']}
   except pymongo.errors.DuplicateKeyError:
     output = {"error":"Record already exists"}
   except (RuntimeError, TypeError, NameError):
     pass
   return jsonify({'result' : output})
+
+def getAirDate(mDate,mTime):
+  # wrangle the DATE
+  print("test [mDate]: " + mDate)
+  if isinstance(mDate, str):
+    # e.g. October 16 2018 (NO comma)
+    airDate = mDate
+    airDate = airDate.strip()
+    datePieces = airDate.split(" ")
+    dateDay = int(datePieces[1])
+    airDate = datePieces[0] + " " + '{:02d}'.format(dateDay) + " " + datePieces[2]
+  else:
+    if isinstance(mDate, date):
+      airDate = datetime.strftime(mDate,"%B %d %Y")
+    else:
+      return False
+
+  # wrangle the time
+  airTime = mTime
+  airTime = airTime.strip()
+  airTime = airTime.replace("p.m.", "PM")
+  airTime = airTime.replace("a.m.", "AM")
+  p = re.compile("([01]?[0-9])([:.])?([0-9]{2})?\s?([AP])M?$")
+  if p.match(airTime) is None:
+    print("test [airTime]: " + airTime)
+    return False
+  hours = int(p.match(airTime).group(1))
+  if ' PM' in airTime and hours <> 12: hours = hours + 12
+  hours = '{:02d}'.format(hours)
+  if not p.match(airTime).group(3) is None:
+    minutes = int(p.match(airTime).group(3))
+  else:
+    minutes = 0
+  minutes = '{:02d}'.format(minutes)
+  ampm = p.match(airTime).group(4)
+  if minutes is None: minutes = "0"
+
+  # merge DATE and TIME
+  airTime = airDate + " " + hours + ":" + minutes + ":00 EST"
+
+  # convert combined datetime to a timestamp
+  print("test [airTime]: " + airTime)
+  airDate = datetime.strptime(airTime, "%B %d %Y %H:%M:%S EST")
+  return airDate
 
 def daterange(start_date, end_date):
     end_date = end_date + timedelta(days=1)
@@ -103,30 +147,68 @@ def daterange(start_date, end_date):
 
 @app.route('/load', methods=['POST'])
 def load_ratings():
-  fetches = mongo.db.fetchs
+  zap = mongo.db.zaps
+  fetches = mongo.db.fetches
   nineMonths = timedelta(days=274)
-  nineMonths = timedelta(days=1)
+  #nineMonths = timedelta(days=1)
   
   # date to STOP
-  toDate = request.json['toDate']
-  toDate = datetime.strptime(toDate,"%Y-%m-%d")
-  if toDate is None: toDate = datetime.date.today()
+  try:
+    toDate = request.json['toDate']
+    toDate = datetime.strptime(toDate,"%Y-%m-%d")
+  except:
+    toDate = datetime.today()
 
   # date to START
-  fromDate = request.json['fromDate']
-  fromDate = datetime.strptime(fromDate,"%Y-%m-%d")
-  if fromDate is None: fromDate = toDate - nineMonths
+  try:
+    fromDate = request.json['fromDate']
+    fromDate = datetime.strptime(fromDate,"%Y-%m-%d")
+  except:
+    fromDate = toDate - nineMonths
 
   for single_date in daterange(fromDate, toDate):
     thisDate = single_date.strftime("%B %d %Y")
+    ratings = None
+    thisCategory = "broadcast"
     try:
       ratings = Broadcast(thisDate)
+      thisCategory = "broadcast"
     except:
       pass
-    print(ratings[0])
-  
-  output = {"message": "DONE"}
+    myErrors = []
+    myMessages = []
+    if not ratings is None:
+      for entry in ratings.entries:
+        if hasattr(entry, 'share'):
+          thisShare = entry.share
+        else:
+          thisShare = 0
+        newDate = getAirDate(thisDate, entry.time)
+        if newDate is False:
+          myErrors.append({"Date error": {"category": thisCategory, "entry": str(entry)}})
+        else:
+          rating = {'category': thisCategory, 'show': entry.show, 'net': entry.net, 'time': newDate,
+                    'rating': entry.rating,
+                    'viewers': entry.viewers, 'share': thisShare}
+          copyOfRating = copy.deepcopy(rating)
+          try:
+            rating_id = zap.insert(rating)
+            new_rating = zap.find_one({'_id': rating_id})
+            output = {'category': new_rating['category'], 'show': new_rating['show'], 'net': new_rating['net'],
+                      'time': new_rating['time'], 'rating': new_rating['rating'], 'viewers': new_rating['viewers'],
+                      'share': new_rating['share']}
+            myMessages.append({"Success": copyOfRating})
+          except pymongo.errors.DuplicateKeyError:
+            myErrors.append({"DuplicateKeyError": copyOfRating})
+          except (RuntimeError, TypeError, NameError):
+            pass
+    else:
+      myErrors.append({"No ratings": {"category":"broadcast","date":thisDate}})
 
-  return jsonify({'result' : output})
+  output = []
+  output.append(myErrors)
+  output.append(myMessages)
+  return jsonify({'result': output})
+
 if __name__ == '__main__':
     app.run(debug=True)
